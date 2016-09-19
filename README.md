@@ -1,0 +1,1 @@
+# kaldi-lattice-word-index
