@@ -51,15 +51,13 @@ void AddInsPenToLattice(BaseFloat penalty, CompactLattice *lat) {
 
 // Given a fst that represents sequences of characters in its paths, creates
 // a fst that accepts words (determined by sequences of characters in between
-// special labels, separators) which where part of the original fst, such that
-// the total cost of a word is the total cost of all paths in the original
-// lattice that included that word.
-void WordsFst(fst::MutableFst<fst::LogArc>* fst,
-              const std::unordered_set<fst::LogArc::Label>& separators) {
-  typedef fst::LogArc Arc;
-  typedef fst::MutableFst<fst::LogArc> Fst;
-  typedef Arc::StateId StateId;
-  typedef Arc::Weight Weight;
+// special labels, separators) which where part of the original fst.
+template <typename Arc>
+void WordsFst(fst::MutableFst<Arc>* fst,
+              const std::unordered_set<typename Arc::Label>& separators) {
+  typedef fst::MutableFst<Arc> Fst;
+  typedef typename Arc::StateId StateId;
+  typedef typename Arc::Weight Weight;
   KALDI_ASSERT(fst != NULL);
   if (fst->Start() == fst::kNoStateId) return;
 
@@ -124,6 +122,9 @@ void WordsFst(fst::MutableFst<fst::LogArc>* fst,
   if (fst->Final(fst->Start()) != Weight::Zero()) {
     fst->SetFinal(fst->Start(), Weight::Zero());
   }
+  // Push weights to the toward the initial state. This speeds up n-best list
+  // retrieval.
+  fst::Push<Arc>(fst, fst::REWEIGHT_TO_INITIAL, fst::kPushWeights);
 }
 
 int main(int argc, char** argv) {
@@ -146,8 +147,9 @@ int main(int argc, char** argv) {
     BaseFloat graph_scale = 1.0;
     BaseFloat insertion_penalty = 0.0;
     BaseFloat beam = std::numeric_limits<BaseFloat>::infinity();
-    bool determinize = true;
     int nbest = 100;
+    bool determinize = true;
+    bool use_log = false;
 
     po.Register("acoustic-scale", &acoustic_scale,
                 "Scaling factor for acoustic likelihoods in the lattices.");
@@ -165,6 +167,9 @@ int main(int argc, char** argv) {
                 "word fst is deterministic (--determinize=true), then this "
                 "is the number of words in the index. Otherwise, the actual "
                 "number of words in the index can be smaller.");
+    po.Register("use-log", &use_log,
+                "If true, perform Forward/Backward using the log semiring "
+                "(log-sum-exp), otherwise use the tropical semiring (max).");
     po.Read(argc, argv);
 
     if (po.NumArgs() != 2) {
@@ -203,25 +208,21 @@ int main(int argc, char** argv) {
       SequentialCompactLatticeReader lattice_reader(lattice_in_str);
       for (; !lattice_reader.Done(); lattice_reader.Next()) {
         const std::string lattice_key = lattice_reader.Key();
-        {
-          CompactLattice lat = lattice_reader.Value();
-          lattice_reader.FreeCurrent();
-          // Acoustic scale
-          if (acoustic_scale != 1.0 || graph_scale != 1.0)
-            fst::ScaleLattice(scale, &lat);
-          // Word insertion penalty
-          if (insertion_penalty != 0.0)
-            AddInsPenToLattice(insertion_penalty, &lat);
-          // Lattice prunning
-          if (beam != std::numeric_limits<BaseFloat>::infinity())
-            PruneLattice(beam, &lat);
-          // Convert lattice to FST
-          fst::ConvertLattice(lat, &log_fst);
-        }
 
+        CompactLattice lat = lattice_reader.Value();
+        lattice_reader.FreeCurrent();
+        // Acoustic scale
+        if (acoustic_scale != 1.0 || graph_scale != 1.0)
+          fst::ScaleLattice(scale, &lat);
+        // Word insertion penalty
+        if (insertion_penalty != 0.0)
+          AddInsPenToLattice(insertion_penalty, &lat);
+        // Lattice prunning
+        if (beam != std::numeric_limits<BaseFloat>::infinity())
+          PruneLattice(beam, &lat);
         // Make sure that lattice complies with all asumptions
         const uint64_t properties =
-            log_fst.Properties(fst::kAcceptor | fst::kAcyclic, true);
+            lat.Properties(fst::kAcceptor | fst::kAcyclic, true);
         if ((properties & fst::kAcceptor) != fst::kAcceptor) {
           KALDI_ERR << "Lattice " << lattice_key << " is not an acceptor";
         }
@@ -229,22 +230,28 @@ int main(int argc, char** argv) {
           KALDI_ERR << "Lattice " << lattice_key << " is not acyclic";
         }
 
-        // Create fst from lattice where each path corresponds to a full
-        // WORD in the original lattice.
-        WordsFst(&log_fst, separator_symbols);
+        if (use_log) {
+          // Convert to CompactLattice to VectorFst<LogArc>
+          fst::ConvertLattice(lat, &log_fst);
+          lat.DeleteStates();
+          // Create fst from lattice where each path corresponds to a full
+          // WORD in the original lattice.
+          WordsFst(&log_fst, separator_symbols);
+          // Convert LogArc to StdArc
+          fst::ArcMap(log_fst, &std_fst,
+                      fst::WeightConvertMapper<fst::LogArc, fst::StdArc>());
+          log_fst.DeleteStates();
 
-        // Push weights to the initial state, so nbest lists get retrieved
-        // faster.
-        fst::Push<fst::LogArc, fst::REWEIGHT_TO_INITIAL>(log_fst, &pushed_fst,
-                                                         fst::kPushWeights);
-        log_fst.DeleteStates();
+        } else {
+          // Convert to CompactLattice to VectorFst<StdArc>
+          fst::ConvertLattice(lat, &std_fst);
+          lat.DeleteStates();
+          // Create fst from lattice where each path corresponds to a full
+          // WORD in the original lattice.
+          WordsFst(&std_fst, separator_symbols);
+        }
 
-        // Convert LogArc to StdArc
-        fst::ArcMap(pushed_fst, &std_fst,
-                    fst::WeightConvertMapper<fst::LogArc, fst::StdArc>());
-        pushed_fst.DeleteStates();
-
-        // Find nshortest paths
+        // Find N-best paths (words)
         if (determinize) {
           fst::ShortestPath(fst::DeterminizeFst<fst::StdArc>(std_fst),
                             &nbest_fst, nbest);
@@ -253,7 +260,7 @@ int main(int argc, char** argv) {
         }
         std_fst.DeleteStates();
 
-        // Print n-bests...
+        // Print n-bests and their lower bound score...
         std::vector< fst::VectorFst<fst::StdArc> > nbest_fsts;
         fst::ConvertNbestToVector(nbest_fst, &nbest_fsts);
         for (const fst::VectorFst<fst::StdArc>& fst : nbest_fsts) {
