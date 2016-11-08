@@ -27,8 +27,6 @@
 #include "lat/kaldi-lattice.h"
 #include "lat/lattice-functions.h"
 
-#include <fst/fst.h>
-
 namespace kaldi {
 
 void AddInsPenToLattice(BaseFloat penalty, CompactLattice *lat) {
