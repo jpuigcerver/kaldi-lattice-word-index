@@ -11,18 +11,18 @@ The program will output the n-best character segmentations of words, with their
 scores. More precisely:
 
 Let's define a binary variable R that denotes whether the character transcript
-(**y**) of the sample (**x**) contains the word formed by characters **c**,
-where each character is segmented according to **s**.
+(**y**) of the sample (**x**) contains the word formed by the sequence of 
+characters **c**, where each character is segmented according to the sequence **s**.
 
 ![Definition of R](imgs/R.png)
 
 Then, the program computes:
 
-- If --only-best-segmentation=false (the default) then:
+- If ```--only-best-segmentation=false``` (the default) then:
 
 ![](imgs/nbest.png)
 
-- If --only-best-segmentation=true then:
+- If ```--only-best-segmentation=true``` then:
 
 ![](imgs/nbest_max.png)
 
