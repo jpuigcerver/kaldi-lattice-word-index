@@ -107,7 +107,7 @@ lat2 -0.356675 a a 0 3 5
 lat2 -1.20397 a a 0 2 5
 ```
 
-Again, notice that the character-level segmentation of the word *a a* is 
+Again, notice that the character-level segmentation of the word **a a** is 
 different, but the whole word-level segmentation is the same in both cases 
 (word is between frames 0 and 5). So, you just need to add these scores 
 (in the log-semiring).
