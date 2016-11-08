@@ -27,6 +27,8 @@
 #include "lat/kaldi-lattice.h"
 #include "lat/lattice-functions.h"
 
+#include <fst/string-weight.h>
+
 namespace kaldi {
 
 void AddInsPenToLattice(BaseFloat penalty, CompactLattice *lat) {
@@ -257,6 +259,7 @@ int main(int argc, char** argv) {
     int nbest = 100;
     int32 max_mem = 536870912; // 512MB
     bool only_best_segmentation = false;
+    bool word_segmentation = false;
     std::string syms_table_filename = "";
 
     po.Register("acoustic-scale", &acoustic_scale,
@@ -272,13 +275,16 @@ int main(int argc, char** argv) {
     po.Register("only-best-segmentation", &only_best_segmentation,
                 "If true, output the best character segmentation for each "
                 "word.");
+    // Not done, yet.
+    /*po.Register("word-segmentation", &word_segmentation,
+                "If true, output index with the whole word-level segmentation "
+                "instead of the character-level segmentation.");*/
     po.Register("max-mem", &max_mem,
                 "Maximum approximate memory usage in determinization (real "
                 "usage might be many times this).");
     po.Register("symbols-table", &syms_table_filename,
                 "Use this symbols table to map from labels to characters.");
     po.Read(argc, argv);
-
 
     if (po.NumArgs() != 2) {
       po.PrintUsage();
@@ -356,6 +362,18 @@ int main(int argc, char** argv) {
       // Note: Determinization, decoding and weight mapping are done on-demand.
       fst::EncodeMapper<fst::LogArc> encoder(fst::kEncodeLabels, fst::ENCODE);
       fst::Encode(&log_fst, &encoder);
+
+
+      if (word_segmentation) {
+        typedef fst::GallicArc<fst::LogArc, fst::GALLIC_RIGHT_RESTRICT> GA;
+        typedef fst::ToGallicMapper<fst::LogArc, fst::GALLIC_RIGHT_RESTRICT> ToGA;
+        ToGA ToMapper;
+        fst::ArcMapFst<fst::LogArc, GA, ToGA> gallic_fst(log_fst, &ToMapper);
+
+
+      }
+
+
       fst::DeterminizeFstOptions<fst::LogArc> det_opts(
           fst::CacheOptions(true, max_mem), fst::kDelta);
       typedef fst::WeightConvertMapper<fst::LogArc, fst::StdArc> WeightMapper;
@@ -363,6 +381,10 @@ int main(int argc, char** argv) {
           fst::DecodeFst<fst::LogArc>(
               fst::DeterminizeFst<fst::LogArc>(log_fst, det_opts), encoder),
           WeightMapper());
+
+
+
+
 
       fst::VectorFst<fst::StdArc> nbest_fst;
       if (only_best_segmentation) {
