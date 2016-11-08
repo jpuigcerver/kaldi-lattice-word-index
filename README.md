@@ -10,24 +10,25 @@ Words are any sequence of characters in between any of the separator symbols
 The program will output the n-best character segmentations of words, with their
 scores. More precisely:
 
-Let's define a binary variable R_c that denotes whether the transcription (y) of
-a sample (x) contains the word formed by characters c_{1:n}.
+Let's define a binary variable R that denotes whether the character transcript
+(**y**) of the sample (**x**) contains the word formed by characters **c**,
+where each character is segmented according to **s**.
 
-![R_c = 1 \iff y \in (\Sigma^* S)? c_{1:n} (S \Sigma^*)?](http://www.sciweavers.org/tex2img.php?eq=R_c%20%3D%20%5Cbegin%7Bcases%7D%0A1%20%26%20%5Cmathbf%7By%7D%20%5Cin%20%28%5CSigma%5E%2A%20%7E%20S%29%5E%3F%20%5Cmathbf%7Bc%7D%20%28S%20%7E%20%5CSigma%5E%2A%29%5E%3F%5C%5C%0A0%20%26%20%5Ctext%7Botherwise%7D%0A%5Cend%7Bcases%7D&bc=White&fc=Black&im=jpg&fs=12&ff=modern&edit=0)
+![Definition of R](imgs/R.png)
 
-Let s_{1:n} be a segmentation of each character in c_{1:n}, then the program
-computes:
+Then, the program computes:
 
 - If --only-best-segmentation=false (the default) then:
 
-![n-best_{c_{1:n},s_{1:n}} P(R_c = 1| x, s_{1:n})](http://www.sciweavers.org/tex2img.php?eq=%5Ctext%7Bn-best%7D_%7B%5Cmathbf%7Bc%7D%2C%20%5Cmathbf%7Bs%7D%7D%20P%28R_c%20%3D%201%20%5Cmid%20%5Cmathbf%7Bx%7D%2C%20%5Cmathbf%7Bs%7D%29&bc=White&fc=Black&im=jpg&fs=12&ff=modern&edit=0)
+![](imgs/nbest.png)
 
 - If --only-best-segmentation=true then:
 
-![n-best_{c_{1:n},s_{1:n}} max_{s_{1:n}} P(R_c = 1 | x, s_{1:n})](http://www.sciweavers.org/tex2img.php?eq=%5Ctext%7Bn-best%7D_%7B%5Cmathbf%7Bc%7D%2C%20%5Cmathbf%7Bs%7D%7D%20%5Cmax_%7B%5Cmathbf%7Bs%7D%7D%20P%28R_c%20%3D%201%20%5Cmid%20%5Cmathbf%7Bx%7D%2C%20%5Cmathbf%7Bs%7D%29&bc=White&fc=Black&im=jpg&fs=12&ff=modern&edit=0)
+![](imgs/nbest_max.png)
 
-This gives a lower bound to P(R_c = 1 | x), but it is usually quite close.
 
+In any case, the score for a character sequence (**c**) is a lower bound to
+P(R = 1 | **x**, **c**), but it is usually quite close.
 
 ## Usage
 ```
