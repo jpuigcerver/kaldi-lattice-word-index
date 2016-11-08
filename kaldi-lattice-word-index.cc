@@ -257,7 +257,6 @@ int main(int argc, char** argv) {
     BaseFloat insertion_penalty = 0.0;
     BaseFloat beam = std::numeric_limits<BaseFloat>::infinity();
     int nbest = 100;
-    BaseFloat delta = fst::kDelta;
     int32 max_mem = 536870912; // 512MB
     bool only_best_segmentation = false;
     std::string syms_table_filename = "";
@@ -275,7 +274,6 @@ int main(int argc, char** argv) {
     po.Register("only-best-segmentation", &only_best_segmentation,
                 "If true, output the best character segmentation for each "
                 "word.");
-    po.Register("delta", &delta, "Tolerance used in determinization.");
     po.Register("max-mem", &max_mem,
                 "Maximum approximate memory usage in determinization (real "
                 "usage might be many times this).");
@@ -361,7 +359,7 @@ int main(int argc, char** argv) {
       fst::EncodeMapper<fst::LogArc> encoder(fst::kEncodeLabels, fst::ENCODE);
       fst::Encode(&log_fst, &encoder);
       fst::DeterminizeFstOptions<fst::LogArc> det_opts(
-          fst::CacheOptions(true, max_mem), delta);
+          fst::CacheOptions(true, max_mem), fst::kDelta);
       typedef fst::WeightConvertMapper<fst::LogArc, fst::StdArc> WeightMapper;
       fst::ArcMapFst<fst::LogArc, fst::StdArc, WeightMapper> std_fst(
           fst::DecodeFst<fst::LogArc>(
@@ -376,7 +374,7 @@ int main(int argc, char** argv) {
         // Also, since the fst is non-functional (for each input sequence
         // (word), we may have multiple output sequences (segmentations).
         fst::DeterminizeFstOptions<fst::StdArc> det_opts2(
-            fst::CacheOptions(true, max_mem), delta, 0,
+            fst::CacheOptions(true, max_mem), fst::kDelta, 0,
             /* Disambiguate output: */ true);
         fst::ShortestPath(fst::DeterminizeFst<fst::StdArc>(std_fst, det_opts2),
                           &nbest_fst, nbest);

@@ -11,7 +11,7 @@ The program will output the n-best character segmentations of words, with their
 scores. More precisely:
 
 Let's define a binary variable R that denotes whether the character transcript
-(**y**) of the sample (**x**) contains the word formed by the sequence of 
+(**y**) of the sample (**x**) contains the word formed by the sequence of
 characters **c**, where each character is segmented according to the sequence **s**.
 
 ![Definition of R](imgs/R.png)
@@ -40,7 +40,6 @@ Usage: kaldi-lattice-word-index [options] separator-symbols lat-rspecifier
 ## Options
   - --acoustic-scale            : Scaling factor for acoustic likelihoods in the lattices. (float, default = 1)
   - --beam                      : Pruning beam (applied after acoustic scaling and adding the insertion penalty). (float, default = inf)
-  - --delta                     : Tolerance used in determinization. (float, default = 0.000976562)
   - --graph-scale               : Scaling factor for graph probabilities in the lattices. (float, default = 1)
   - --insertion-penalty         : Add this penalty to the lattice arcs with non-epsilon output label (typically, equivalent to word insertion penalty). (float, default = 0)
   - --max-mem                   : Maximum approximate memory usage in determinization (real usage might be many times this). (int, default = 536870912)
