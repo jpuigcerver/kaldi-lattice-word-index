@@ -174,7 +174,7 @@ void WordsFst(fst::MutableFst<Arc>* fst,
   }
   // Push weights to the toward the initial state. This speeds up n-best list
   // retrieval.
-  //fst::Push<Arc>(fst, fst::REWEIGHT_TO_INITIAL, fst::kPushWeights);
+  fst::Push<Arc>(fst, fst::REWEIGHT_TO_INITIAL, fst::kPushWeights);
 }
 
 template <typename Arc>
