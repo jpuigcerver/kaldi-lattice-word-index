@@ -63,8 +63,17 @@ lat1 -1.30947 b a a 0 2 4 9
 lat1 -2.30259 a 0 3
 ```
 
-Keep in mind that you can have multiple word entries representing the same
-word-segmentation, but different character segmentation within the word.
+## Word-level segmentation instead of character-level segmentation scores
+
+Notice that the program computes _P(R = 1 | **x**, **c**, **s**)_ for each
+of the n-best word and character segmentations. However, the same word
+can have the same word-level segmentation but multiple character-level
+segmentation hypotheses.
+
+If you want to compute something like _P(R = 1 | **x**, **c**, z)_, where 
+_z_ is know the word-level segmentation, you will need to approximate this
+calculation (although in many cases you will get the exact score) as a 
+post-process step:
 
 Take for instance, the lattice represented in `lattice2.txt`:
 
@@ -91,15 +100,26 @@ After executing the program:
 ../kaldi-lattice-word-index --symbols-table=syms.txt 3 ark:lattice2.txt
 ```
 
-You will get:
+You get:
 
 ```
 lat2 -0.356675 a a 0 3 5
 lat2 -1.20397 a a 0 2 5
 ```
 
-Notice that the character-level segmentation of the word *a a* is different,
-but the whole word-level segmentation is the same.
+Again, notice that the character-level segmentation of the word *a a* is 
+different, but the whole word-level segmentation is the same in both cases 
+(word is between frames 0 and 5). So, you just need to add these scores 
+(in the log-semiring).
 
-If you wanted to get the true utterance-level relevance probabilities, i.e.
-*P(R = 1 | *x*, *c*)* you would need to add these two.
+After executing the `run.sh` script, you will get:
+
+```
+# WORD-LEVEL SEGMENTATION INDEX:
+lat2 8.02056e-07 a a 0 5
+```
+
+Notice that this is just an approximation: in order to get the real value 
+(and the real word-level best segmentations), you would need to do this
+summation *before* extracting the n-best list. But this is not currently 
+possible.
