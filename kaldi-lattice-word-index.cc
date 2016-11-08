@@ -27,28 +27,7 @@
 #include "lat/kaldi-lattice.h"
 #include "lat/lattice-functions.h"
 
-namespace fst {
-
-void ConvertLatticeWeight(const kaldi::CompactLatticeWeight& iw,
-                          StdArc::Weight* ow) {
-  KALDI_ASSERT(ow != NULL);
-  *ow = StdArc::Weight(iw.Weight().Value1() + iw.Weight().Value2());
-}
-
-void ConvertLatticeWeight(const kaldi::CompactLatticeWeight& iw,
-                          LogArc::Weight* ow) {
-  KALDI_ASSERT(ow != NULL);
-  *ow = LogArc::Weight(iw.Weight().Value1() + iw.Weight().Value2());
-}
-
-template <typename F1, typename F2>
-void ConvertFst(const F1& f1, F2* f2) {
-  typedef typename F1::Arc A1;
-  typedef typename F2::Arc A2;
-  fst::ArcMap(f1, f2, fst::WeightConvertMapper<A1, A2>());
-}
-
-}  // namespace fst
+#include <fst/fst.h>
 
 namespace kaldi {
 
@@ -69,6 +48,55 @@ void AddInsPenToLattice(BaseFloat penalty, CompactLattice *lat) {
   }
 }
 
+// Convert a CompactLattice to a FST where the cost of each arc is the
+// total cost of the CompactLatticeArc (acoustic + graph costs), the
+// input label is the word/char in the CompactLatticeArc, and the output label
+// is an integer that maps to the initial and end frames segmentation.
+// The mapping table is written in segm_to_label.
+template <typename Arc>
+int32 CompactLatticeToSegmFst(
+    const CompactLattice& clat, fst::MutableFst<Arc>* fst,
+    std::map<std::tuple<int32,int32>, int32>* segm_to_label) {
+  typedef typename Arc::Label Label;
+  typedef typename Arc::StateId StateId;
+  fst->DeleteStates();
+  segm_to_label->clear();
+
+  // Compute the times for each state in the lattice, so that we can get
+  // the segmentation of each symbol.
+  std::vector<int32> times;
+  const int32 total_frames = CompactLatticeStateTimes(clat, &times);
+
+  // Add states to the output fst.
+  for (StateId s = 0; s < clat.NumStates(); ++s) {
+    fst->SetFinal(fst->AddState(),
+                  clat.Final(s).Weight().Value1() +
+                  clat.Final(s).Weight().Value2());
+  }
+  fst->SetStart(clat.Start());
+
+  // Add arcs to the output fst.
+  for (fst::StateIterator<CompactLattice> siter(clat); !siter.Done();
+       siter.Next()) {
+    const StateId s = siter.Value();
+    for (fst::ArcIterator<CompactLattice> aiter(clat, s); !aiter.Done();
+         aiter.Next()) {
+      const CompactLatticeArc& arc = aiter.Value();
+      const std::tuple<int32, int32> segm =
+          std::make_tuple(times[s], times[arc.nextstate]);
+      const Label new_olabel = segm_to_label->insert(
+          std::make_pair(segm, segm_to_label->size() + 1)).first->second;
+      const double new_weight =
+          arc.weight.Weight().Value1() + arc.weight.Weight().Value2();
+      fst->AddArc(s, Arc(arc.ilabel, new_olabel, new_weight, arc.nextstate));
+    }
+  }
+
+  return total_frames;
+}
+
+
+
 }  // namespace kaldi
 
 // Given a fst that represents sequences of characters in its paths, creates
@@ -76,7 +104,7 @@ void AddInsPenToLattice(BaseFloat penalty, CompactLattice *lat) {
 // special labels, separators) which where part of the original fst.
 template <typename Arc>
 void WordsFst(fst::MutableFst<Arc>* fst,
-              const std::unordered_set<typename Arc::Label>& separators) {
+              const std::unordered_set<int32>& separators) {
   typedef fst::MutableFst<Arc> Fst;
   typedef typename Arc::StateId StateId;
   typedef typename Arc::Weight Weight;
@@ -113,7 +141,7 @@ void WordsFst(fst::MutableFst<Arc>* fst,
     //     start of a new word.
     for (fst::ArcIterator<Fst> aiter(*fst, s); !aiter.Done(); aiter.Next()) {
       const Arc& arc = aiter.Value();
-      if (separators.count(arc.olabel)) {
+      if (separators.count(arc.ilabel)) {
         new_arcs.push_back(
             Arc(0, 0, fst::Times(arc.weight, bw[arc.nextstate]), sFinal));
         new_arcs_from_init.push_back(
@@ -146,7 +174,50 @@ void WordsFst(fst::MutableFst<Arc>* fst,
   }
   // Push weights to the toward the initial state. This speeds up n-best list
   // retrieval.
-  fst::Push<Arc>(fst, fst::REWEIGHT_TO_INITIAL, fst::kPushWeights);
+  //fst::Push<Arc>(fst, fst::REWEIGHT_TO_INITIAL, fst::kPushWeights);
+}
+
+template <typename Arc>
+void PrintIndex(
+    const std::string& key, const fst::Fst<Arc>& nbest_fst,
+    const std::map<std::tuple<int32, int32>, int32>& segm_to_label,
+    const fst::SymbolTable* symbols_table) {
+  // Reverse the mapping from frame tuples (tuple<int32,int32>) to
+  // label (int32).
+  std::vector< std::tuple<int32,int32> > label_to_segm;
+  label_to_segm.resize(segm_to_label.size() + 1);
+  label_to_segm.push_back(std::make_tuple(-1, -1)); // label = 0 not used
+  for (const std::pair<std::tuple<int32,int32>, int32>& p : segm_to_label) {
+    label_to_segm[p.second] = p.first;
+  }
+  // Print n-bests and their scores.
+  std::vector< fst::VectorFst<Arc> > nbest_fsts;
+  fst::ConvertNbestToVector(nbest_fst, &nbest_fsts);
+  for (const fst::VectorFst<Arc>& fst : nbest_fsts) {
+    std::vector<int32> nbest_isymbs;
+    std::vector<int32> nbest_osymbs;
+    typename Arc::Weight nbest_cost;
+    fst::GetLinearSymbolSequence<Arc, int32>(
+        fst, &nbest_isymbs, &nbest_osymbs, &nbest_cost);
+    // Print lattice key and word probability.
+    std::cout << key << " " << -nbest_cost.Value();
+    // Print char symbols.
+    for (const int32& s : nbest_isymbs) {
+      if (symbols_table) {
+        std::cout << " " << symbols_table->Find(s);
+      } else {
+        std::cout << " " << s;
+      }
+    }
+    // Print char segmentation.
+    for (const int32& s : nbest_osymbs) {
+      // Start frame of each character.
+      std::cout << " " << std::get<0>(label_to_segm[s]);
+    }
+    // Last frame of the last character.
+    std::cout << " " << std::get<1>(label_to_segm[nbest_osymbs.back()])
+              << std::endl;
+  }
 }
 
 int main(int argc, char** argv) {
@@ -156,11 +227,27 @@ int main(int argc, char** argv) {
     const char* usage =
         "Build a word index from character lattices.\n"
         "\n"
-        "The scores of each word are lower bounds of the probability that the "
-        "word is present in the transcription, but typically they are very "
-        "close to the exact probability.\n"
+        "Words are any sequence of characters in between any of the separator "
+        "symbols. The program will output the n-best character segmentations "
+        "of words, with their score. More precisely:\n"
+        "Let R_c = 1 denote y \\in (\\Sigma^* @)? c_{1:n} (@ \\Sigma^*)? and "
+        "R_c = 0 otherwise, where @ is any of the separator symbols.\n"
+        "Then R denotes whether the transcription (y) of each utterance "
+        "contains the word formed by characters c_1,...,c_n.\n"
+        "Let s_{1:n} be a segmentation of each character in c_{1:n}, then "
+        "the program computes:\n"
         "\n"
-        "Usage: kaldi-lattice-word-index [options] separator-symbols lat-rspecifier\n"
+        "1. If --only-best-segmentation=false (the default) then:\n"
+        "n-best_{c_{1:n},s_{1:n}} P(R_c = 1| x, s_{1:n})\n"
+        "\n"
+        "2. If --only-best-segmentation=true then:\n"
+        "n-best_{c_{1:n},s_{1:n}} max_{s_{1:n}} P(R_c = 1 | x, s_{1:n})\n"
+        "\n"
+        "This gives a lower bound to P(R_c = 1 | x), but it is usually quite "
+        "close.\n"
+        "\n"
+        "Usage: kaldi-lattice-word-index [options] separator-symbols "
+        "lat-rspecifier\n"
         " e.g.: kaldi-lattice-word-index \"1 2\" ark:lats.ark\n"
         " e.g.: kaldi-lattice-word-index --nbest=10000 \"1 2\" ark:lats.ark\n";
 
@@ -170,8 +257,10 @@ int main(int argc, char** argv) {
     BaseFloat insertion_penalty = 0.0;
     BaseFloat beam = std::numeric_limits<BaseFloat>::infinity();
     int nbest = 100;
-    bool determinize = true;
-    bool use_log = false;
+    BaseFloat delta = fst::kDelta;
+    int32 max_mem = 536870912; // 512MB
+    bool only_best_segmentation = false;
+    std::string syms_table_filename = "";
 
     po.Register("acoustic-scale", &acoustic_scale,
                 "Scaling factor for acoustic likelihoods in the lattices.");
@@ -182,17 +271,18 @@ int main(int argc, char** argv) {
                 "label (typically, equivalent to word insertion penalty).");
     po.Register("beam", &beam, "Pruning beam (applied after acoustic scaling "
                 "and adding the insertion penalty).");
-    po.Register("determinize", &determinize,
-                "Determinize fst before building the index.");
-    po.Register("nbest", &nbest,
-                "Extract this number of paths from the words fst. If the "
-                "word fst is deterministic (--determinize=true), then this "
-                "is the number of words in the index. Otherwise, the actual "
-                "number of words in the index can be smaller.");
-    po.Register("use-log", &use_log,
-                "If true, perform Forward/Backward using the log semiring "
-                "(log-sum-exp), otherwise use the tropical semiring (max).");
+    po.Register("nbest", &nbest, "Extract this number of n-best hypothesis.");
+    po.Register("only-best-segmentation", &only_best_segmentation,
+                "If true, output the best character segmentation for each "
+                "word.");
+    po.Register("delta", &delta, "Tolerance used in determinization.");
+    po.Register("max-mem", &max_mem,
+                "Maximum approximate memory usage in determinization (real "
+                "usage might be many times this).");
+    po.Register("symbols-table", &syms_table_filename,
+                "Use this symbols table to map from labels to characters.");
     po.Read(argc, argv);
+
 
     if (po.NumArgs() != 2) {
       po.PrintUsage();
@@ -200,15 +290,24 @@ int main(int argc, char** argv) {
     }
 
     // Parse separator symbols from arguments
-    std::unordered_set<fst::StdArc::Label> separator_symbols;
+    std::unordered_set<int32> separator_symbols;
     {
       std::istringstream separator_symbols_iss(po.GetArg(1));
-      fst::StdArc::Label tmp;
+      int32 tmp;
       while (separator_symbols_iss >> tmp) {
         if (tmp == 0) {
           KALDI_ERR << "Epsilon (0) cannot be a separator symbol!";
         }
         separator_symbols.insert(tmp);
+      }
+    }
+
+    // Read symbols table.
+    fst::SymbolTable *syms_table = NULL;
+    if (syms_table_filename != "") {
+      if (!(syms_table = fst::SymbolTable::ReadText(syms_table_filename))) {
+        KALDI_ERR << "Could not read symbol table from file "
+                  << syms_table_filename;
       }
     }
 
@@ -218,86 +317,73 @@ int main(int argc, char** argv) {
     scale[1][1] = acoustic_scale;
 
     const std::string lattice_in_str = po.GetArg(2);
-    const bool lattice_is_table =
-        (ClassifyRspecifier(lattice_in_str, NULL, NULL) != kNoRspecifier);
 
     fst::VectorFst<fst::LogArc> log_fst;
-    fst::VectorFst<fst::LogArc> pushed_fst;
-    fst::VectorFst<fst::StdArc> std_fst;
-    fst::VectorFst<fst::StdArc> nbest_fst;
+    std::map<std::tuple<int32, int32>, fst::LogArc::Label> segm_to_label;
 
-    if (lattice_is_table) {
-      SequentialCompactLatticeReader lattice_reader(lattice_in_str);
-      for (; !lattice_reader.Done(); lattice_reader.Next()) {
-        const std::string lattice_key = lattice_reader.Key();
+    SequentialCompactLatticeReader lattice_reader(lattice_in_str);
+    for (; !lattice_reader.Done(); lattice_reader.Next()) {
+      const std::string lattice_key = lattice_reader.Key();
 
-        CompactLattice lat = lattice_reader.Value();
-        lattice_reader.FreeCurrent();
-        // Acoustic scale
-        if (acoustic_scale != 1.0 || graph_scale != 1.0)
-          fst::ScaleLattice(scale, &lat);
-        // Word insertion penalty
-        if (insertion_penalty != 0.0)
-          AddInsPenToLattice(insertion_penalty, &lat);
-        // Lattice prunning
-        if (beam != std::numeric_limits<BaseFloat>::infinity())
-          PruneLattice(beam, &lat);
-        // Make sure that lattice complies with all asumptions
-        const uint64_t properties =
-            lat.Properties(fst::kAcceptor | fst::kAcyclic, true);
-        if ((properties & fst::kAcceptor) != fst::kAcceptor) {
-          KALDI_ERR << "Lattice " << lattice_key << " is not an acceptor";
-        }
-        if ((properties & fst::kAcyclic) != fst::kAcyclic) {
-          KALDI_ERR << "Lattice " << lattice_key << " is not acyclic";
-        }
+      CompactLattice lat = lattice_reader.Value();
+      lattice_reader.FreeCurrent();
+      // TopSort compact lattice
+      TopSortCompactLatticeIfNeeded(&lat);
+      // Acoustic scale
+      if (acoustic_scale != 1.0 || graph_scale != 1.0)
+        fst::ScaleLattice(scale, &lat);
+      // Word insertion penalty
+      if (insertion_penalty != 0.0)
+        AddInsPenToLattice(insertion_penalty, &lat);
+      // Lattice prunning
+      if (beam != std::numeric_limits<BaseFloat>::infinity())
+        PruneLattice(beam, &lat);
+      // Ensure that the lattice does not have epsilon arcs.
+      fst::RmEpsilon(&lat);
 
-        if (use_log) {
-          // Convert to CompactLattice to VectorFst<LogArc>
-          fst::ConvertLattice(lat, &log_fst);
-          lat.DeleteStates();
-          // Create fst from lattice where each path corresponds to a full
-          // WORD in the original lattice.
-          WordsFst(&log_fst, separator_symbols);
-          // Convert LogArc to StdArc
-          fst::ArcMap(log_fst, &std_fst,
-                      fst::WeightConvertMapper<fst::LogArc, fst::StdArc>());
-          log_fst.DeleteStates();
+      // Convert CompactLattice to LogFst with segmentation info as the
+      // output label, and the words/chars as the input label.
+      CompactLatticeToSegmFst(lat, &log_fst, &segm_to_label);
 
-        } else {
-          // Convert to CompactLattice to VectorFst<StdArc>
-          fst::ConvertLattice(lat, &std_fst);
-          lat.DeleteStates();
-          // Create fst from lattice where each path corresponds to a full
-          // WORD in the original lattice.
-          WordsFst(&std_fst, separator_symbols);
-        }
+      // Create fst from lattice where each path corresponds to a full
+      // WORD (and its segmentation) in the original lattice.
+      WordsFst(&log_fst, separator_symbols);
 
-        // Find N-best paths (words)
-        if (determinize) {
-          fst::ShortestPath(fst::DeterminizeFst<fst::StdArc>(std_fst),
-                            &nbest_fst, nbest);
-        } else {
-          fst::ShortestPath(std_fst, &nbest_fst, nbest);
-        }
-        std_fst.DeleteStates();
+      // We need to sum up all scores for the same word segmentation.
+      // That means determinization in the log-semiring. However, since
+      // the FST is non-functional we need to encode the (ilabel, olabel)
+      // pairs into a new label and make the original FST a weighted
+      // automaton.
+      // After determinization, the word and segmentation information are
+      // restored again and the weights are mapped to the tropical-semiring
+      // in order to get (n-best paths).
+      // Note: Determinization, decoding and weight mapping are done on-demand.
+      fst::EncodeMapper<fst::LogArc> encoder(fst::kEncodeLabels, fst::ENCODE);
+      fst::Encode(&log_fst, &encoder);
+      fst::DeterminizeFstOptions<fst::LogArc> det_opts(
+          fst::CacheOptions(true, max_mem), delta);
+      typedef fst::WeightConvertMapper<fst::LogArc, fst::StdArc> WeightMapper;
+      fst::ArcMapFst<fst::LogArc, fst::StdArc, WeightMapper> std_fst(
+          fst::DecodeFst<fst::LogArc>(
+              fst::DeterminizeFst<fst::LogArc>(log_fst, det_opts), encoder),
+          WeightMapper());
 
-        // Print n-bests and their lower bound score...
-        std::vector< fst::VectorFst<fst::StdArc> > nbest_fsts;
-        fst::ConvertNbestToVector(nbest_fst, &nbest_fsts);
-        for (const fst::VectorFst<fst::StdArc>& fst : nbest_fsts) {
-          std::vector<int32> nbest_symbs;
-          fst::StdArc::Weight nbest_cost;
-          fst::GetLinearSymbolSequence<fst::StdArc, int32>(
-              fst, NULL, &nbest_symbs, &nbest_cost);
-          std::cout << lattice_key << " " << -nbest_cost.Value();
-          for (const int32& s : nbest_symbs)
-            std::cout << " " << s;
-          std::cout << std::endl;
-        }
+      fst::VectorFst<fst::StdArc> nbest_fst;
+      if (only_best_segmentation) {
+        // We need to determinize again to keep only the best segmentation
+        // within the lattice for each word. To do that, we need to
+        // determinize again in the tropical-semiring.
+        // Also, since the fst is non-functional (for each input sequence
+        // (word), we may have multiple output sequences (segmentations).
+        fst::DeterminizeFstOptions<fst::StdArc> det_opts2(
+            fst::CacheOptions(true, max_mem), delta, 0,
+            /* Disambiguate output: */ true);
+        fst::ShortestPath(fst::DeterminizeFst<fst::StdArc>(std_fst, det_opts2),
+                          &nbest_fst, nbest);
+      } else {
+        fst::ShortestPath(std_fst, &nbest_fst, nbest);
       }
-    } else {
-      KALDI_ERR << "NOT IMPLEMENTED!";
+      PrintIndex(lattice_key, nbest_fst, segm_to_label, syms_table);
     }
 
     return 0;
