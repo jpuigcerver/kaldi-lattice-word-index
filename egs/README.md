@@ -82,8 +82,8 @@ following FST:
 
 ![Exemplar lattice 2 seen as a FST](fst2.png)
 
-This lattice has two paths with the same character sequence (**a a**), but with
-different character-level segmentation hypotheses.
+This lattice has two paths with the same character sequence (i.e. **a a**),
+but with different character-level segmentation hypotheses.
 
 After executing the program:
 
@@ -102,4 +102,4 @@ Notice that the character-level segmentation of the word *a a* is different,
 but the whole word-level segmentation is the same.
 
 If you wanted to get the true utterance-level relevance probabilities, i.e.
-*P(R = 1 | **x**, **c**)* you would need to add these two.
+*P(R = 1 | *x*, *c*)* you would need to add these two.
