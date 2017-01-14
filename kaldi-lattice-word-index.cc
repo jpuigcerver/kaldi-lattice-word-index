@@ -95,8 +95,6 @@ int32 CompactLatticeToSegmFst(
   return total_frames;
 }
 
-
-
 }  // namespace kaldi
 
 // Given a fst that represents sequences of characters in its paths, creates
@@ -180,16 +178,10 @@ void WordsFst(fst::MutableFst<Arc>* fst,
 template <typename Arc>
 void PrintIndex(
     const std::string& key, const fst::Fst<Arc>& nbest_fst,
-    const std::map<std::tuple<int32, int32>, int32>& segm_to_label,
-    const fst::SymbolTable* symbols_table) {
-  // Reverse the mapping from frame tuples (tuple<int32,int32>) to
-  // label (int32).
-  std::vector< std::tuple<int32,int32> > label_to_segm;
-  label_to_segm.resize(segm_to_label.size() + 1);
-  label_to_segm.push_back(std::make_tuple(-1, -1)); // label = 0 not used
-  for (const std::pair<std::tuple<int32,int32>, int32>& p : segm_to_label) {
-    label_to_segm[p.second] = p.first;
-  }
+    const std::vector<std::tuple<int32, int32>>& label_to_segm,
+    const fst::SymbolTable* symbols_table,
+    const bool word_segmentation) {
+
   // Print n-bests and their scores.
   std::vector< fst::VectorFst<Arc> > nbest_fsts;
   fst::ConvertNbestToVector(nbest_fst, &nbest_fsts);
@@ -209,14 +201,51 @@ void PrintIndex(
         std::cout << " " << s;
       }
     }
-    // Print char segmentation.
-    for (const int32& s : nbest_osymbs) {
-      // Start frame of each character.
-      std::cout << " " << std::get<0>(label_to_segm[s]);
+    if (word_segmentation) {
+      // Print word segmentation: Only first and last frame of the word.
+      std::cout << " " << nbest_osymbs.front() - 1
+                << " " << nbest_osymbs.back() - 1
+                << std::endl;
+    } else {
+      // Print char segmentation.
+      for (const int32& s : nbest_osymbs) {
+        // Start frame of each character.
+        std::cout << " " << std::get<0>(label_to_segm[s]);
+      }
+      // Last frame of the last character.
+      std::cout << " " << std::get<1>(label_to_segm[nbest_osymbs.back()])
+                << std::endl;
     }
-    // Last frame of the last character.
-    std::cout << " " << std::get<1>(label_to_segm[nbest_osymbs.back()])
-              << std::endl;
+  }
+}
+
+// Remove the output label from all arcs that are not output arcs from the
+// start state and are not inputs to any final state. That is, arcs in between
+// of a path.
+template <typename Arc>
+void RemoveCharSegmFromWordFst(
+    fst::MutableFst<Arc>* fst,
+    const std::vector<std::tuple<int32,int32>>& label_to_segm) {
+  using namespace fst;
+  typedef MutableFst<Arc> Fst;
+  typedef typename Arc::StateId StateId;
+  typedef typename Arc::Label Label;
+  typedef typename Arc::Weight Weight;
+
+  for (StateIterator<Fst> siter(*fst); !siter.Done(); siter.Next()) {
+    const StateId s = siter.Value();
+    for (MutableArcIterator<Fst> aiter(fst, s); !aiter.Done(); aiter.Next()) {
+      Arc arc = aiter.Value();
+      KALDI_ASSERT(arc.olabel > 0);
+      if (s == fst->Start()) {
+        arc.olabel = std::get<0>(label_to_segm[arc.olabel]) + 1;
+      } else if (fst->Final(arc.nextstate) != Weight::Zero()) {
+        arc.olabel = std::get<1>(label_to_segm[arc.olabel]) + 1;
+      } else {
+        arc.olabel = 0;
+      }
+      aiter.SetValue(arc);
+    }
   }
 }
 
@@ -256,6 +285,7 @@ int main(int argc, char** argv) {
     BaseFloat graph_scale = 1.0;
     BaseFloat insertion_penalty = 0.0;
     BaseFloat beam = std::numeric_limits<BaseFloat>::infinity();
+    BaseFloat delta = fst::kDelta;
     int nbest = 100;
     int32 max_mem = 536870912; // 512MB
     bool only_best_segmentation = false;
@@ -271,14 +301,15 @@ int main(int argc, char** argv) {
                 "label (typically, equivalent to word insertion penalty).");
     po.Register("beam", &beam, "Pruning beam (applied after acoustic scaling "
                 "and adding the insertion penalty).");
+    po.Register("delta", &delta, "Tolerance used in determinization. "
+                "The smaller the better.");
     po.Register("nbest", &nbest, "Extract this number of n-best hypothesis.");
     po.Register("only-best-segmentation", &only_best_segmentation,
                 "If true, output the best character segmentation for each "
                 "word.");
-    // Not done, yet.
-    /*po.Register("word-segmentation", &word_segmentation,
+    po.Register("word-segmentation", &word_segmentation,
                 "If true, output index with the whole word-level segmentation "
-                "instead of the character-level segmentation.");*/
+                "instead of the character-level segmentation.");
     po.Register("max-mem", &max_mem,
                 "Maximum approximate memory usage in determinization (real "
                 "usage might be many times this).");
@@ -351,6 +382,26 @@ int main(int argc, char** argv) {
       // WORD (and its segmentation) in the original lattice.
       WordsFst(&log_fst, separator_symbols);
 
+      // Reverse the mapping from frame tuples (tuple<int32,int32>) to
+      // label (int32).
+      std::vector< std::tuple<int32,int32> > label_to_segm;
+      label_to_segm.resize(segm_to_label.size() + 1);
+      label_to_segm.push_back(std::make_tuple(-1, -1)); // label = 0 not used
+      for (const std::pair<std::tuple<int32,int32>, int32>& p : segm_to_label) {
+        label_to_segm[p.second] = p.first;
+      }
+
+      // We want word-segmentation, instead of the character-level segmentation.
+      // Thus, we need to sum all the hypotheses with the same word-level
+      // segmentation, even if the character-level segmentation is different.
+      // In order to do so, we take advantage of the fact that every path from
+      // The initial state to the final state is a word, thus we will remove
+      // (set to epsilon) the output label of all arcs except those outgoing from
+      // the initial state or entering a final state.
+      if (word_segmentation) {
+        RemoveCharSegmFromWordFst(&log_fst, label_to_segm);
+      }
+
       // We need to sum up all scores for the same word segmentation.
       // That means determinization in the log-semiring. However, since
       // the FST is non-functional we need to encode the (ilabel, olabel)
@@ -364,25 +415,13 @@ int main(int argc, char** argv) {
       fst::Encode(&log_fst, &encoder);
 
 
-      if (word_segmentation) {
-        typedef fst::GallicArc<fst::LogArc, fst::GALLIC_RIGHT_RESTRICT> GA;
-        typedef fst::ToGallicMapper<fst::LogArc, fst::GALLIC_RIGHT_RESTRICT> ToGA;
-        ToGA ToMapper;
-        fst::ArcMapFst<fst::LogArc, GA, ToGA> gallic_fst(log_fst, &ToMapper);
-
-
-      }
-
-
       fst::DeterminizeFstOptions<fst::LogArc> det_opts(
-          fst::CacheOptions(true, max_mem), fst::kDelta);
+          fst::CacheOptions(true, max_mem), delta);
       typedef fst::WeightConvertMapper<fst::LogArc, fst::StdArc> WeightMapper;
       fst::ArcMapFst<fst::LogArc, fst::StdArc, WeightMapper> std_fst(
           fst::DecodeFst<fst::LogArc>(
               fst::DeterminizeFst<fst::LogArc>(log_fst, det_opts), encoder),
           WeightMapper());
-
-
 
 
 
@@ -394,14 +433,17 @@ int main(int argc, char** argv) {
         // Also, since the fst is non-functional (for each input sequence
         // (word), we may have multiple output sequences (segmentations).
         fst::DeterminizeFstOptions<fst::StdArc> det_opts2(
-            fst::CacheOptions(true, max_mem), fst::kDelta, 0,
+            fst::CacheOptions(true, max_mem), delta, 0,
             /* Disambiguate output: */ true);
         fst::ShortestPath(fst::DeterminizeFst<fst::StdArc>(std_fst, det_opts2),
                           &nbest_fst, nbest);
       } else {
         fst::ShortestPath(std_fst, &nbest_fst, nbest);
       }
-      PrintIndex(lattice_key, nbest_fst, segm_to_label, syms_table);
+
+      // Print index!
+      PrintIndex(lattice_key, nbest_fst, label_to_segm, syms_table,
+                 word_segmentation);
     }
 
     return 0;

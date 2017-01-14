@@ -70,9 +70,9 @@ of the n-best word and character segmentations. However, the same word
 can have the same word-level segmentation but multiple character-level
 segmentation hypotheses.
 
-If you want to compute something like _P(R = 1 | **x**, **c**, z)_, where 
+If you want to compute something like _P(R = 1 | **x**, **c**, z)_, where
 _z_ is know the word-level segmentation, you will need to approximate this
-calculation (although in many cases you will get the exact score) as a 
+calculation (although in many cases you will get the exact score) as a
 post-process step:
 
 Take for instance, the lattice represented in `lattice2.txt`:
@@ -107,9 +107,9 @@ lat2 -0.356675 a a 0 3 5
 lat2 -1.20397 a a 0 2 5
 ```
 
-Again, notice that the character-level segmentation of the word **a a** is 
-different, but the whole word-level segmentation is the same in both cases 
-(word is between frames 0 and 5). So, you just need to add these scores 
+Again, notice that the character-level segmentation of the word **a a** is
+different, but the whole word-level segmentation is the same in both cases
+(word is between frames 0 and 5). So, you just need to add these scores
 (in the log-semiring).
 
 After executing the `run.sh` script, you will get:
@@ -119,7 +119,7 @@ After executing the `run.sh` script, you will get:
 lat2 8.02056e-07 a a 0 5
 ```
 
-Notice that this is just an approximation: in order to get the real value 
+Notice that this is just an approximation: in order to get the real value
 (and the real word-level best segmentations), you would need to do this
-summation *before* extracting the n-best list. But this is not currently 
+summation *before* extracting the n-best list. But this is not currently
 possible.
