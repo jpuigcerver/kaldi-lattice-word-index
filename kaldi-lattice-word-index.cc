@@ -434,7 +434,7 @@ int main(int argc, char** argv) {
         // (word), we may have multiple output sequences (segmentations).
         fst::DeterminizeFstOptions<fst::StdArc> det_opts2(
             fst::CacheOptions(true, max_mem), delta, 0,
-            /* Disambiguate output: */ true);
+            /* Disambiguate output: */ fst::DETERMINIZE_DISAMBIGUATE);
         fst::ShortestPath(fst::DeterminizeFst<fst::StdArc>(std_fst, det_opts2),
                           &nbest_fst, nbest);
       } else {
